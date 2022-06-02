@@ -158,6 +158,23 @@ export class Annotations extends VuexModule {
     }
   }
 
+  @Action
+  public updateAnnotationTags({
+    annotation,
+    tags
+  }: {
+    annotation: IAnnotation;
+    tags: string[];
+  }) {
+    if (annotation) {
+      this.annotationsAPI.updateAnnotation({ ...annotation, tags });
+      this.setAnnotation({
+        annotation: { ...annotation, tags },
+        index: this.annotations.indexOf(annotation)
+      });
+    }
+  }
+
   @Mutation
   public setAnnotations(values: IAnnotation[]) {
     this.annotations = values;

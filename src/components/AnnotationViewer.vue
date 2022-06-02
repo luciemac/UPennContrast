@@ -1,5 +1,30 @@
 <template>
-  <div></div>
+  <v-dialog
+    v-model="selectAndTagToolElements.selectedAnnotations"
+    v-if="
+      selectAndTagToolElements.selectedAnnotations &&
+        selectAndTagToolElements.selectedAnnotations.length > 0
+    "
+    max-width="30vw"
+    min-height="200px"
+    @click:outside="resetGroupSelectionAndTags"
+  >
+    <v-card>
+      <v-card-title class="text-h5">
+        Add tags to selected annotations
+      </v-card-title>
+      <v-card-text>
+        <v-spacer />
+        <tag-picker v-model="selectAndTagToolElements.tags"></tag-picker>
+      </v-card-text>
+      <v-card-actions class="button-bar">
+        <v-btn color="grey" plain @click="resetGroupSelectionAndTags"
+          >Cancel</v-btn
+        >
+        <v-btn color="warning" @click="addTagsToAnnotations">Add</v-btn>
+      </v-card-actions>
+    </v-card>
+  </v-dialog>
 </template>
 <script lang="ts">
 import { Vue, Component, Watch, Prop } from "vue-property-decorator";
@@ -8,6 +33,8 @@ import annotationStore from "@/store/annotation";
 import toolsStore from "@/store/tool";
 import propertiesStore from "@/store/properties";
 import filterStore from "@/store/filters";
+
+import TagPicker from "@/components/TagPicker.vue";
 
 import geojs from "geojs";
 
@@ -33,13 +60,27 @@ import {
 } from "@/utils/annotation";
 
 // Draws annotations on the given layer, and provides functionnality for the user selected tool.
-@Component({ components: {} })
+@Component({
+  components: {
+    TagPicker
+  }
+})
 export default class AnnotationViewer extends Vue {
   readonly store = store;
   readonly annotationStore = annotationStore;
   readonly toolsStore = toolsStore;
   readonly propertiesStore = propertiesStore;
   readonly filterStore = filterStore;
+
+  selectAndTagToolElements: {
+    annotation: IAnnotation | null;
+    selectedAnnotations: IAnnotation[] | null;
+    tags: string[];
+  } = {
+    annotation: null,
+    selectedAnnotations: [],
+    tags: []
+  };
 
   get roiFilter() {
     return this.filterStore.emptyROIFilter;
@@ -627,6 +668,9 @@ export default class AnnotationViewer extends Vue {
         const annotation = this.selectedTool.values.annotation;
         this.annotationLayer.mode(annotation?.shape);
         break;
+      case "selectAndTag":
+        this.annotationLayer.mode("polygon");
+        break;
       case "segmentation":
         // TODO: tool asks for ROI, change layer mode and trigger computation afterwards
         // TODO: otherwise, trigger computation here
@@ -696,6 +740,27 @@ export default class AnnotationViewer extends Vue {
         if (this.selectedTool) {
           if (this.selectedTool.type === "create") {
             this.addAnnotationFromGeoJsAnnotation(evt.annotation);
+          } else if (this.selectedTool.type === "selectAndTag") {
+            // Should draw a selected area and once the tag is added, should be removed
+            const coordinates = evt.annotation.coordinates();
+
+            // Temporarilary store polygon annotation to, then, remove it
+            this.selectAndTagToolElements.annotation = evt.annotation;
+
+            // Filter annotations before applying tag
+            this.selectAndTagToolElements.selectedAnnotations = this.annotations.filter(
+              annotation => {
+                return annotation.coordinates.reduce((isIn, point) => {
+                  return isIn || geojs.util.pointInPolygon(point, coordinates);
+                }, false);
+              }
+            );
+
+            if (
+              this.selectAndTagToolElements.selectedAnnotations.length === 0
+            ) {
+              this.resetGroupSelectionAndTags();
+            }
           }
         } else if (evt.annotation) {
           this.handleNewROIFilter(evt.annotation);
@@ -704,6 +769,37 @@ export default class AnnotationViewer extends Vue {
       default:
         break;
     }
+  }
+
+  // Add created / selected tags from the tagPicker to selected annotations
+  addTagsToAnnotations() {
+    if (
+      this.selectAndTagToolElements.selectedAnnotations &&
+      this.selectAndTagToolElements.tags.length !== 0
+    ) {
+      this.selectAndTagToolElements.selectedAnnotations.forEach(annotation => {
+        // Check for tags that are not yet stored in annotation
+        const tagsToAdd = this.selectAndTagToolElements.tags.filter(
+          tag => !annotation.tags.includes(tag)
+        );
+        const tags = [...tagsToAdd, ...annotation.tags];
+        this.annotationStore.updateAnnotationTags({ annotation, tags });
+      }, this);
+    }
+    this.resetGroupSelectionAndTags();
+  }
+
+  // Define method to reset parameters once the action of adding tags is done or canceled
+  resetGroupSelectionAndTags() {
+    // Todo: remove annotation from layer
+    this.annotationLayer.removeAnnotation(
+      this.selectAndTagToolElements.annotation
+    );
+    this.selectAndTagToolElements = {
+      annotation: null,
+      selectedAnnotations: null,
+      tags: []
+    };
   }
 
   @Watch("annotations")

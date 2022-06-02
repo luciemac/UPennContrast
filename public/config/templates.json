@@ -20,6 +20,11 @@
     ]
   },
   {
+    "name": "Select and tag a group of annotations",
+    "type": "selectAndTag",
+    "interface": []
+  },
+  {
     "name": "\"Snap to\" manual annotation tools",
     "type": "snap",
     "interface": [
