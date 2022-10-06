@@ -85,6 +85,7 @@ class Annotation(AccessControlledModel):
 
   def initialize(self):
     self.name="upenn_annotation"
+    self.ensureIndices(['tags', 'location', 'channel'])
     events.bind('model.folder.remove', 'upenn.annotations.clean.orphaned', self.cleanOrphaned)
 
   def cleanOrphaned(self, event):

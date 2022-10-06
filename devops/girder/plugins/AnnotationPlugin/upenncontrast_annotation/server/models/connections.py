@@ -1,17 +1,35 @@
 from girder.models.model_base import AccessControlledModel
-from girder.exceptions import AccessException, ValidationException
+from girder.exceptions import GirderException, ValidationException
 from girder.constants import AccessType
 from girder import events
+from girder.utility import optionalArgumentDecorator
 
 from bson.objectid import ObjectId
+from bson.errors import InvalidId
 from girder.models.folder import Folder
 
 from .annotation import Annotation
 from ..helpers.connections import annotationToAnnotationDistance
 
 import jsonschema
-import math
 import numpy as np
+
+@optionalArgumentDecorator
+def cacheDB(fun, maxSize = 100):
+  cached = dict()
+  def inner(*args, **kwargs):
+    cacheSize = len(cached)
+    if cacheSize == maxSize:
+      cached.clear()
+    channelId = kwargs['channelId']
+    location = kwargs['location']
+    tags = kwargs['tags']
+    key = (channelId, tuple(tags), (location['XY'], location['Z'], location['Time']))
+    if key not in cached:
+      cached[key] = fun(*args,**kwargs)
+      cacheSize +=  1
+    return cached[key]
+  return inner
 
 class ConnectionSchema:
     tagsSchema = {
@@ -116,28 +134,39 @@ class AnnotationConnection(AccessControlledModel):
     
     annotations2 = [annotation for annotation in annotations if annotation["_id"] != annotationRef["_id"]]
     distances = np.array([(annotation, annotationToAnnotationDistance(annotationRef, annotation)) for annotation in annotations2])
-    sortDistances = np.argsort(distances[:,1])
-    return distances[sortDistances[0],:]
+    sortDistances = np.argsort(distances[:, 1])
+    return distances[sortDistances[0], :]
+  
+  @cacheDB(maxSize=50)
+  def getAnnotations(self, channelId = None, tags = None, location = None):
+    query = {}
+    if channelId is not None and isinstance(channelId, int) :
+      query.update({"channel": channelId})
+    if tags is not None and len(tags) > 0:
+      query.update({"tags": {  "$in": tags }})
+    if location is not None: 
+      query.update({"location": location})
     
+    return list(Annotation().find(query))
+
   def connectToNearest(self, info, user=None):
     # annotation ids, a list of tags and a channel index.
     connections = []
 
     annotationsIdsToConnect = info['annotationsIds']
-    ids = [ObjectId(id) for id in annotationsIdsToConnect]
-  
-    # Get annotations that match selected tags and channel
-    query = {
-      "_id": {"$nin": ids},
-    }
-    # channelId can be None if not specify
-    channelId = info["channelId"]
-    channelQuery = {"channel": int(channelId)} if channelId is not None else {}
-    query.update(channelQuery)
+    if not annotationsIdsToConnect or len(annotationsIdsToConnect) == 0:
+      raise GirderException('Missing annotations ids: ', annotationsIdsToConnect)
+    
+    ids = None
+    try:
+      ids = [ObjectId(id) for id in annotationsIdsToConnect]
+    except InvalidId:
+      raise ValidationException('Invalid ObjectId format. Should be a list of strings and not ObjectIds.', id)
 
-    tags = info["tags"]
-    tagsQuery = {"tags": {  "$in": tags }} if tags is not None and len(tags) > 0 else {}
-    query.update(tagsQuery)
+    # query = {}
+    # channelId can be None if not specify
+    channelId = int(info.get("channelId", None)) if info.get("channelId", None) is not None else None
+    tags = info.get("tags", [])
 
     # Loop on each annotation to connect
     # Look for the closest annotation and connect to it
@@ -152,23 +181,20 @@ class AnnotationConnection(AccessControlledModel):
 
       # Only work on annotations that are placed in the same tile
       location = annotation["location"]
-      tileQuery = {
-        "location": location
-      }
-
-      query.update(tileQuery)
-      annotations = list(Annotation().find(query))
+      
+      annotations = self.getAnnotations(channelId=channelId, tags=tags, location=location)
 
       # Find the closest annotation
       (closestAnnotation, _) = self.getClosestAnnotation(annotation, annotations)
       
       # Define connection
-      connections.append(self.create(creator=user, connection={
-        "tags": [],
-        "label": "A Connection -- automatic",
-        "parentId": str(closestAnnotation['_id']),
-        "childId": str(id),
-        "datasetId": annotation["datasetId"]
-      }))
+      if closestAnnotation is not None:
+        connections.append(self.create(creator=user, connection={
+          "tags": [],
+          "label": "A Connection",
+          "parentId": str(closestAnnotation['_id']),
+          "childId": str(id),
+          "datasetId": annotation["datasetId"]
+        }))
 
     return connections
